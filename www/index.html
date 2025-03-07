@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
+    <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp">
+    <title>WebGL Video Player</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: black;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 10;
+            color: white;
+        }
+    </style>
+</head>
+
+<script src="dep.js"></script>
+<script src="decoder.js"></script>
+<script>
+    let canvas, webglPlayer;
+    let width = 0, height = 0;
+    let isPlaying = false;
+
+    let rtspUrl = "rtsp://192.168.2.105:8555/unicast";  // 默认rtsp地址
+    let websocketUrl = "ws://192.168.2.132:9000";  // 默认WebSocket地址
+    let socket;
+
+    Module.onRuntimeInitialized = function () {
+        init_decoder = Module.cwrap('init_decoder', 'number', ['number']);
+        decoder_raw = Module.cwrap('decoder_raw', 'number', ['number', 'number']);
+        free_decoder = Module.cwrap('free_decoder');
+    };
+
+    // WebSocket连接管理
+    function initWebSocket() {
+        socket = new WebSocket(websocketUrl);  // 使用动态设置的WebSocket URL
+        socket.addEventListener('open', () => {
+            console.log('WebSocket connection opened');
+        });
+        socket.addEventListener('message', handleWebSocketMessage);
+        socket.addEventListener('close', () => {
+            console.log('WebSocket connection closed');
+            reconnectWebSocket(); // 重连
+        });
+        socket.addEventListener('error', (error) => {
+            console.error('WebSocket error:', error);
+        });
+    }
+
+    // WebSocket重新连接
+    function reconnectWebSocket() {
+    }
+
+    // 处理WebSocket消息
+    function handleWebSocketMessage(event) {
+        if (typeof event.data === "string") {
+            const txt = event.data;
+            if (txt === "start") isPlaying = true;
+        } else {
+            if (!isPlaying) return;
+            processVideoData(event.data);
+        }
+    }
+
+    // 处理视频数据
+    function processVideoData(data) {
+        let fileReader = new FileReader();
+        fileReader.onload = function () {
+            let buffer = new Uint8Array(fileReader.result);
+            let ptr = decodeVideoData(buffer);
+
+            width = Module.HEAPU32[ptr / 4];
+            height = Module.HEAPU32[ptr / 4 + 1];
+            let imgBufferPtr = Module.HEAPU32[ptr / 4 + 2];
+            let imgBuffer = Module.HEAPU8.subarray(imgBufferPtr, imgBufferPtr + width * height * 3 / 2);
+
+            renderFrame(imgBuffer);
+
+            Module._free(ptr);
+        };
+        fileReader.readAsArrayBuffer(data);
+    }
+
+    // 解码视频数据
+    function decodeVideoData(buffer) {
+        let buf = Module._malloc(buffer.length);
+        Module.HEAPU8.set(buffer, buf);
+        return decoder_raw(buf, buffer.length);
+    }
+
+    // 渲染视频帧
+    function renderFrame(data) {
+        if (!webglPlayer) {
+            const canvasId = "canvas";
+            canvas = document.getElementById(canvasId);
+            webglPlayer = new WebGLPlayer(canvas, { preserveDrawingBuffer: false });
+        }
+        webglPlayer.renderFrame(data, width, height, width * height, width * height / 4);
+    }
+
+    // 渲染黑色画面
+    function renderNothing() {
+        let blackBuffer = new Uint8Array(width * height * 3 / 2);
+        blackBuffer.fill(0, 0, width * height);
+        blackBuffer.fill(128, width * height, width * height + (width * height) / 4);
+        blackBuffer.fill(128, width * height + (width * height) / 4, blackBuffer.length);
+        renderFrame(blackBuffer); // 显示黑色画面
+    }
+
+    // 启动播放
+    function startPlay() {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(`{"cmd": "start","url": "${rtspUrl}"}`);
+            init_decoder(0);
+        }
+    }
+
+    // 停止播放
+    function stopPlay() {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(`{"cmd": "stop","url": "${rtspUrl}"}`);
+        }
+        isPlaying = false;
+        free_decoder();
+        renderNothing();
+    }
+
+    // 全屏切换
+    function fullscreen() {
+        const elem = document.documentElement;
+        if (elem.requestFullscreen) elem.requestFullscreen();
+        else if (elem.mozRequestFullScreen) elem.mozRequestFullScreen(); // Firefox
+        else if (elem.webkitRequestFullscreen) elem.webkitRequestFullscreen(); // Chrome, Safari, Opera
+        else if (elem.msRequestFullscreen) elem.msRequestFullscreen(); // IE/Edge
+    }
+
+    // 更新RTSP URL
+    function setRtspUrl() {
+        const inputUrl = document.getElementById("rtspUrl").value;
+        rtspUrl = inputUrl;
+    }
+
+    // 更新WebSocket URL
+    function setWebSocketUrl() {
+        const inputUrl = document.getElementById("websocketUrl").value;
+        websocketUrl = inputUrl;
+        initWebSocket(); // 更新WebSocket连接
+    }
+
+    // 初始化WebSocket
+    window.onload = () => {
+        initWebSocket();
+    };
+</script>
+
+<body>
+
+    <!-- WebGL Canvas -->
+    <canvas id="canvas" width="1920" height="1080"></canvas>
+
+    <!-- Controls -->
+    <div id="controls">
+        <button onclick="startPlay()">Start</button>
+        <button onclick="stopPlay()">Stop</button>
+        <button onclick="fullscreen()" class="fullscreen-btn">Fullscreen</button>
+        <input type="text" id="rtspUrl" placeholder="Enter RTSP URL" value="rtsp://192.168.2.105:8555/unicast" />
+        <button onclick="setRtspUrl()">Set RTSP URL</button>
+        <input type="text" id="websocketUrl" placeholder="Enter WebSocket URL" value="ws://192.168.2.132:9000" />
+        <button onclick="setWebSocketUrl()">Set WebSocket URL</button>
+    </div>
+
+    <script src="webgl.js"></script>
+
+</body>
+
+</html>
