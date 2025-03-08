@@ -1,3 +1,6 @@
+## RtspWebPlayer
+use ffmpeg wasm play h264 frame from websocket
+
 ## build
 
 ```
